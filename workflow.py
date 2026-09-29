@@ -10,8 +10,8 @@ class ApprovalState(TypedDict):
     explanation: Optional[str]
 
 def check_vendor(state: ApprovalState) -> ApprovalState:
-    from main import VENDORS
-    vendor = VENDORS.get(state["vendor_id"], {})
+    from db import load_vendors
+    vendor = load_vendors().get(state["vendor_id"], {})
     state["vendor_rating"] = vendor.get("rating", 0)
     return state
 

@@ -6,9 +6,10 @@ from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 from workflow import approval_graph
+from db import init_db, load_vendors, load_purchase_orders
 
 load_dotenv()
-
+init_db()
 app = FastAPI(title="Enterprise AI Integration Gateway")
 client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
 
@@ -18,30 +19,15 @@ def verify_api_key(x_api_key: str = Header(...)):
     if x_api_key != INTERNAL_API_KEY:
         raise HTTPException(status_code=401, detail="Invalid API key")
 
-# --- Mock "ERP" data (stand-in for a real SAP/backend system) ---
-VENDORS = {
-    "V-001": {"name": "Acme Supplies", "country": "USA", "rating": 4.2},
-    "V-002": {"name": "Globex Corp", "country": "Germany", "rating": 3.8},
-    "V-003": {"name": "Initech", "country": "India", "rating": 4.5},
-}
-
-PURCHASE_ORDERS = {
-    "PO-1001": {"vendor_id": "V-001", "vendor": "Acme Supplies", "amount": 15000, "status": "Pending Approval"},
-    "PO-1002": {"vendor_id": "V-002", "vendor": "Globex Corp", "amount": 4200, "status": "Approved"},
-    "PO-1003": {"vendor_id": "V-003", "vendor": "Initech", "amount": 32000, "status": "Pending Approval"},
-    "PO-1004": {"vendor_id": "V-001", "vendor": "Acme Supplies", "amount": 8700, "status": "Approved"},
-    "PO-1005": {"vendor_id": "V-002", "vendor": "Globex Corp", "amount": 21000, "status": "Rejected"},
-}
-
 # --- Tool functions (used by Gemini's tool-calling) ---
 def get_purchase_order(po_id: str) -> dict:
     """Look up a purchase order by its ID and return its details."""
-    return PURCHASE_ORDERS.get(po_id, {"error": "Purchase order not found"})
+    return load_purchase_orders().get(po_id, {"error": "Purchase order not found"})
 
 def search_purchase_orders(status: Optional[str] = None, min_amount: Optional[float] = None) -> list:
     """Search purchase orders, optionally filtering by status and/or a minimum amount."""
     results = []
-    for po_id, po in PURCHASE_ORDERS.items():
+    for po_id, po in load_purchase_orders().items():
         if status and po["status"] != status:
             continue
         if min_amount and po["amount"] < min_amount:
@@ -139,7 +125,9 @@ def odata_purchase_orders(
     top: Optional[int] = Query(None, alias="$top"),
     expand: Optional[str] = Query(None, alias="$expand"),
 ):
-    data = parse_odata_filter(filter, PURCHASE_ORDERS) if filter else PURCHASE_ORDERS
+    all_pos = load_purchase_orders()
+    data = parse_odata_filter(filter, all_pos) if filter else all_pos
+    vendors = load_vendors()
 
     results = []
     for po_id, po in data.items():
@@ -147,7 +135,7 @@ def odata_purchase_orders(
 
         if expand and "Vendor" in expand:
             vendor_id = row.get("vendor_id")
-            row["Vendor"] = VENDORS.get(vendor_id)
+            row["Vendor"] = vendors.get(vendor_id)
 
         if select:
             fields = ["po_id"] + [f.strip() for f in select.split(",")]
@@ -159,6 +147,7 @@ def odata_purchase_orders(
         results = results[:top]
 
     return {"value": results}
+
 # --- Approval workflow endpoint (LangGraph) ---
 class ApprovalRequest(BaseModel):
     po_id: str
@@ -173,7 +162,7 @@ class ApprovalResponse(BaseModel):
 
 @app.post("/approve", response_model=ApprovalResponse, dependencies=[Depends(verify_api_key)])
 def approve_po(request: ApprovalRequest):
-    po = PURCHASE_ORDERS.get(request.po_id)
+    po = load_purchase_orders().get(request.po_id)
     if po is None:
         raise HTTPException(status_code=404, detail="Purchase order not found")
 
