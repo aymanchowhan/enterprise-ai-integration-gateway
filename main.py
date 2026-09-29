@@ -5,6 +5,7 @@ from pydantic import BaseModel
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
+from workflow import approval_graph
 
 load_dotenv()
 
@@ -158,3 +159,38 @@ def odata_purchase_orders(
         results = results[:top]
 
     return {"value": results}
+# --- Approval workflow endpoint (LangGraph) ---
+class ApprovalRequest(BaseModel):
+    po_id: str
+
+class ApprovalResponse(BaseModel):
+    po_id: str
+    amount: float
+    vendor_id: str
+    vendor_rating: float
+    decision: str
+    explanation: str
+
+@app.post("/approve", response_model=ApprovalResponse, dependencies=[Depends(verify_api_key)])
+def approve_po(request: ApprovalRequest):
+    po = PURCHASE_ORDERS.get(request.po_id)
+    if po is None:
+        raise HTTPException(status_code=404, detail="Purchase order not found")
+
+    result = approval_graph.invoke({
+        "po_id": request.po_id,
+        "amount": po["amount"],
+        "vendor_id": po["vendor_id"],
+        "vendor_rating": None,
+        "decision": None,
+        "explanation": None,
+    })
+
+    return ApprovalResponse(
+        po_id=result["po_id"],
+        amount=result["amount"],
+        vendor_id=result["vendor_id"],
+        vendor_rating=result["vendor_rating"],
+        decision=result["decision"],
+        explanation=result["explanation"],
+    )
